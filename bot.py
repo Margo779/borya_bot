@@ -39,7 +39,7 @@ from predictions import PAID_PREDICTIONS
 
 # === КОНФИГУРАЦИЯ ===
 BOT_TOKEN = "8820100460:AAGS4-haGYH-W-vg7xHkdrJI3HWcKMPFPqg"
-CRYPTO_BOT_TOKEN = "ВАШ_CRYPTO_BOT_TOKEN"  # Получить в @CryptoBot -> /pay
+CRYPTO_BOT_TOKEN = "628976:AA2wMF2x654qMgbneE74cbBS1RAVyuCJyY9"  # Получить в @CryptoBot -> /pay
 
 VIDEO_PLAY_TIME = 9.5
 CACHED_VIDEO_ID = None
