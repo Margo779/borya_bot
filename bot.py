@@ -243,7 +243,56 @@ async def receive_question(message: types.Message, state: FSMContext):
         reply_markup=kb,
         parse_mode="Markdown"
     )
+# --- АРЕНДА БОРИ ---
+@dp.callback_query(F.data == "pay_rent")
+async def pay_rent_menu(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"⭐️ Оплатить аренда Stars ({PRICE_RENT_STARS} ⭐️)", callback_data="pay_stars_rent")],
+        [InlineKeyboardButton(text=f"💎 Оплатить аренду Криптой (${PRICE_RENT_USDT})", callback_data="pay_crypto_rent")]
+    ])
+    await callback.message.answer(
+        "👑 **Аренда Бори на 7 дней:**\n\nВсе вопросы и расклады в течение недели станут абсолютно бесплатными!\nВыберите способ оплаты:",
+        reply_markup=kb,
+        parse_mode="Markdown"
+    )
 
+@dp.callback_query(F.data == "pay_stars_rent")
+async def pay_stars_rent(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    await bot.send_invoice(
+        chat_id=user_id,
+        title="👑 Аренда Бори на 7 дней",
+        description="Безлимитные вопросы попугаю Боре на неделю",
+        provider_token="",
+        currency="XTR",
+        prices=[LabeledPrice(label="Аренда 7 дней", amount=PRICE_RENT_STARS)],
+        start_parameter="borya-rent",
+        payload=f"stars_rent_{user_id}"
+    )
+
+@dp.callback_query(F.data == "pay_crypto_rent")
+async def pay_crypto_rent(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    pay_url = await create_crypto_invoice(PRICE_RENT_USDT, "Аренда Бори на 7 дней", f"crypto_rent_{user_id}")
+    if pay_url:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💳 Оплатить через @CryptoBot", url=pay_url)],
+            [InlineKeyboardButton(text="✅ Я оплатил аренду", callback_data="check_crypto_rent")]
+        ])
+        await callback.message.answer("Нажмите кнопку ниже для оплаты аренды. После перевода нажмите «Я оплатил аренду»:", reply_markup=kb)
+    else:
+        await callback.message.answer("Ошибка создания счета. Попробуйте оплату через Telegram Stars.")
+
+@dp.callback_query(F.data == "check_crypto_rent")
+async def check_crypto_rent(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    expire_dt = await set_rent(user_id, days=7)
+    await callback.answer("Аренда успешно активирована! 👑")
+    await callback.message.answer(
+        f"👑 **Поздравляем! Аренда Бори активирована** до {expire_dt.strftime('%d.%m.%Y %H:%M')}!\n\n"
+        "Теперь все ваши вопросы будут бесплатными. Можете написать их Боре прямо в чат."
+    )
 # --- ОПЛАТА СТАРСАМИ (STARS) ---
 @dp.callback_query(F.data == "pay_stars_q")
 async def pay_stars_q(callback: types.CallbackQuery, state: FSMContext):
@@ -269,13 +318,22 @@ async def process_pre_checkout(pre_checkout_query: PreCheckoutQuery):
 @dp.message(F.successful_payment)
 async def process_successful_payment(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
-    data = await state.get_data()
-    saved_question = data.get("user_question", "Ваш вопрос")
-    await state.clear()
+    payload = message.successful_payment.invoice_payload
+    
+    if payload.startswith("stars_rent_"):
+        expire_dt = await set_rent(user_id, days=7)
+        await message.answer(
+            f"👑 **Оплата прошла успешно! Аренда Бори активирована** до {expire_dt.strftime('%d.%m.%Y %H:%M')}!\n\n"
+            "Теперь вы можете задавать вопросы бесплатно."
+        )
+    else:
+        data = await state.get_data()
+        saved_question = data.get("user_question", "Ваш вопрос")
+        await state.clear()
 
-    paid_text = await get_unique_prediction(user_id)
-    caption = f"❓ **Ваш вопрос:** *{saved_question}*\n\n📜 **Расклад Бори:**\n{paid_text}"
-    await play_borya_and_reveal(message.chat.id, caption)
+        paid_text = await get_unique_prediction(user_id)
+        caption = f"❓ **Ваш вопрос:** *{saved_question}*\n\n📜 **Расклад Бори:**\n{paid_text}"
+        await play_borya_and_reveal(message.chat.id, caption)
 
 # --- ОПЛАТА КРИПТОЙ (CRYPTOBOT) ---
 @dp.callback_query(F.data == "pay_crypto_q")
