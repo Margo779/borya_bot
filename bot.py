@@ -212,11 +212,21 @@ async def send_free_fortune(callback: types.CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "pay_question")
 async def ask_user_question(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
-    await state.set_state(FortuneForm.waiting_for_question)
-    await callback.message.answer(
-        "🔮 **Задайте ваш вопрос Боре:**\n\nНапишите сообщение с вашим вопросом в чат:",
-        parse_mode="Markdown"
-    )
+    user_id = callback.from_user.id
+    
+    # Если у пользователя активна аренда, сразу даем возможность написать вопрос без всяких оплат!
+    if await is_rent_active(user_id):
+        await state.set_state(FortuneForm.waiting_for_question)
+        await callback.message.answer(
+            "👑 **У вас активна аренда!**\n\n🔮 Задайте ваш вопрос Боре (это бесплатно):",
+            parse_mode="Markdown"
+        )
+    else:
+        await state.set_state(FortuneForm.waiting_for_question)
+        await callback.message.answer(
+            "🔮 **Задайте ваш вопрос Боре:**\n\nНапишите сообщение с вашим вопросом в чат:",
+            parse_mode="Markdown"
+        )
 
 @dp.message(FortuneForm.waiting_for_question, F.text)
 async def receive_question(message: types.Message, state: FSMContext):
