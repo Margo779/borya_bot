@@ -237,6 +237,12 @@ async def receive_question(message: types.Message, state: FSMContext):
         await state.clear()
         paid_text = await get_unique_prediction(user_id)
         caption = f"❓ **Ваш вопрос:** *{question_text}*\n\n📜 **Расклад Бори:**\n{paid_text}"
+        
+        try:
+            await message.reply("🔮 Боря изучает ваш вопрос по аренде...")
+        except Exception:
+            pass
+            
         await play_borya_and_reveal(message.chat.id, caption)
         return
 
@@ -295,13 +301,22 @@ async def pay_crypto_rent(callback: types.CallbackQuery):
         await callback.message.answer("Ошибка создания счета. Попробуйте оплату через Telegram Stars.")
 
 @dp.callback_query(F.data == "check_crypto_rent")
-async def check_crypto_rent(callback: types.CallbackQuery):
+async def check_crypto_rent(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     expire_dt = await set_rent(user_id, days=7)
     await callback.answer("Аренда успешно активирована! 👑")
+    
+    await state.set_state(FortuneForm.waiting_for_question)
+    
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+        
     await callback.message.answer(
         f"👑 **Поздравляем! Аренда Бори активирована** до {expire_dt.strftime('%d.%m.%Y %H:%M')}!\n\n"
-        "Теперь все ваши вопросы будут бесплатными. Можете написать их Боре прямо в чат."
+        "🔮 *Аренда активна.* Напишите ваш вопрос Боре прямо в этот чат:",
+        parse_mode="Markdown"
     )
 # --- ОПЛАТА СТАРСАМИ (STARS) ---
 @dp.callback_query(F.data == "pay_stars_q")
