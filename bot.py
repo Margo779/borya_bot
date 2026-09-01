@@ -19,7 +19,6 @@ server_thread.start()
 
 import asyncio
 import random
-import uuid
 from datetime import date, datetime, timedelta
 import aiohttp
 import aiosqlite
@@ -114,7 +113,7 @@ async def get_unique_prediction(user_id: int) -> str:
         await db.commit()
     return chosen
 
-# === CRYPTOBOT API (создание и проверка чеков) ===
+# === CRYPTOBOT API ===
 async def create_crypto_invoice(amount: float, description: str, payload: str):
     url = "https://pay.crypt.bot/api/createInvoice"
     headers = {"Crypto-Pay-API-Token": CRYPTO_BOT_TOKEN}
@@ -142,6 +141,29 @@ async def check_crypto_invoice_status(invoice_id: int) -> bool:
                 status = result["result"]["items"][0]["status"]
                 return status == "paid"
     return False
+
+# === ФОНОВЫЙ АВТОПЕРЕОДЧИК ОПЛАТЫ (Без кнопки проверки) ===
+async def background_crypto_checker(chat_id: int, user_id: int, invoice_id: int, payment_type: str, state: FSMContext):
+    # Проверяем в течение 15 минут (90 раз по 10 секунд)
+    for _ in range(90):
+        await asyncio.sleep(10)
+        if await check_crypto_invoice_status(invoice_id):
+            if payment_type == "rent":
+                expire_dt = await set_rent(user_id, days=7)
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=f"👑 **Оплата получена! Аренда Бори активирована** до {expire_dt.strftime('%d.%m.%Y %H:%M')}!\n\n"
+                         "🔮 Теперь любые ваши сообщения в чат будут автоматически обрабатываться Борей бесплатно!",
+                    parse_mode="Markdown"
+                )
+            elif payment_type == "question":
+                await state.set_state(FortuneForm.waiting_for_single_question)
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text="✅ **Оплата через CryptoBot получена!**\n\n✍️ Теперь напишите ваш вопрос Боре в чат:",
+                    parse_mode="Markdown"
+                )
+            return
 
 # === АНИМАЦИЯ БОРЯ ===
 async def play_borya_and_reveal(chat_id: int, final_text: str):
@@ -225,7 +247,7 @@ async def send_free_fortune(callback: types.CallbackQuery, state: FSMContext):
 
 
 # ==========================================
-# СЦЕНАРИЙ 1: АРЕНДА (С сохранением меню вариантов)
+# СЦЕНАРИЙ 1: АРЕНДА
 # ==========================================
 
 @dp.callback_query(F.data == "pay_rent_menu")
@@ -236,7 +258,6 @@ async def pay_rent_menu(callback: types.CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text=f"⭐️ Оплатить аренду Stars ({PRICE_RENT_STARS} ⭐️)", callback_data="pay_stars_rent")],
         [InlineKeyboardButton(text=f"💎 Оплатить аренду Криптой (${PRICE_RENT_USDT})", callback_data="pay_crypto_rent")]
     ])
-    # Используем edit_text, чтобы сообщение обновлялось, а не удалялось (оба варианта остаются доступны)
     await callback.message.edit_text(
         "👑 **Аренда Бори на 7 дней:**\n\nВсе вопросы и расклады в течение недели станут абсолютно бесплатными!\nВыберите способ оплаты:",
         reply_markup=kb,
@@ -260,40 +281,22 @@ async def pay_stars_rent(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "pay_crypto_rent")
 async def pay_crypto_rent(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
+    chat_id = callback.message.chat.id
     pay_url, invoice_id = await create_crypto_invoice(PRICE_RENT_USDT, "Аренда Бори на 7 дней", f"crypto_rent_{user_id}")
     if pay_url:
-        await state.update_data(crypto_invoice_id=invoice_id)
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💳 Оплатить через @CryptoBot", url=pay_url)],
-            [InlineKeyboardButton(text="✅ Проверить оплату аренды", callback_data="check_crypto_rent")]
+            [InlineKeyboardButton(text="💳 Оплатить в CryptoBot", url=pay_url)]
         ])
-        await callback.message.edit_text("Нажмите кнопку ниже для оплаты аренды через CryptoBot. После перевода нажмите «Проверить оплату аренды»:", reply_markup=kb)
+        await callback.message.edit_text(
+            "💎 **Счет на оплату аренды создан!**\n\n"
+            "Нажмите кнопку ниже для перевода. Как только оплата пройдет, Боря **автоматически** активирует аренду прямо здесь!",
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
+        # Запускаем фоновую проверку
+        asyncio.create_task(background_crypto_checker(chat_id, user_id, invoice_id, "rent", state))
     else:
         await callback.message.answer("Ошибка создания счета. Попробуйте оплату через Telegram Stars.")
-
-@dp.callback_query(F.data == "check_crypto_rent")
-async def check_crypto_rent(callback: types.CallbackQuery, state: FSMContext):
-    user_id = callback.from_user.id
-    data = await state.get_data()
-    invoice_id = data.get("crypto_invoice_id")
-    
-    is_paid = False
-    if invoice_id:
-        is_paid = await check_crypto_invoice_status(invoice_id)
-    
-    if not is_paid:
-        await callback.answer("❌ Оплата еще не поступила. Пожалуйста, завершите перевод в CryptoBot.", show_alert=True)
-        return
-
-    expire_dt = await set_rent(user_id, days=7)
-    await callback.answer("Аренда успешно подтверждена! 👑", show_alert=True)
-    await state.clear()
-    
-    await callback.message.edit_text(
-        f"👑 **Поздравляем! Аренда Бори активирована** до {expire_dt.strftime('%d.%m.%Y %H:%M')}!\n\n"
-        "🔮 Теперь любые ваши сообщения в чат будут автоматически обрабатываться Борей бесплатно!",
-        parse_mode="Markdown"
-    )
 
 
 # ==========================================
@@ -339,39 +342,23 @@ async def pay_stars_q(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "pay_crypto_q")
 async def pay_crypto_q(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
+    chat_id = callback.message.chat.id
     pay_url, invoice_id = await create_crypto_invoice(PRICE_QUESTION_USDT, "Расклад Бори", f"crypto_q_{user_id}")
     
     if pay_url:
-        await state.update_data(crypto_invoice_id=invoice_id)
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💳 Оплатить через @CryptoBot", url=pay_url)],
-            [InlineKeyboardButton(text="✅ Проверить оплату", callback_data="check_crypto_pay")]
+            [InlineKeyboardButton(text="💳 Оплатить в CryptoBot", url=pay_url)]
         ])
-        await callback.message.edit_text("Нажмите кнопку ниже для перевода средств. После оплаты нажмите «Проверить оплату»:", reply_markup=kb)
+        await callback.message.edit_text(
+            "💎 **Счет на оплату расклада создан!**\n\n"
+            "Нажмите кнопку ниже для перевода. Как только оплата пройдет, Боря **автоматически** попросит вас написать вопрос!",
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
+        # Запускаем фоновую проверку
+        asyncio.create_task(background_crypto_checker(chat_id, user_id, invoice_id, "question", state))
     else:
         await callback.message.answer("Ошибка создания счета. Попробуйте оплату через Telegram Stars.")
-
-@dp.callback_query(F.data == "check_crypto_pay")
-async def check_crypto_pay(callback: types.CallbackQuery, state: FSMContext):
-    user_id = callback.from_user.id
-    data = await state.get_data()
-    invoice_id = data.get("crypto_invoice_id")
-    
-    is_paid = False
-    if invoice_id:
-        is_paid = await check_crypto_invoice_status(invoice_id)
-        
-    if not is_paid:
-        await callback.answer("❌ Оплата еще не обнаружена в CryptoBot. Пожалуйста, завершите перевод.", show_alert=True)
-        return
-
-    await callback.answer("Оплата подтверждена! 💎", show_alert=True)
-    await state.set_state(FortuneForm.waiting_for_single_question)
-    
-    await callback.message.edit_text(
-        "✅ **Оплата прошла успешно!**\n\n✍️ Теперь напишите ваш вопрос Боре в чат:",
-        parse_mode="Markdown"
-    )
 
 @dp.pre_checkout_query()
 async def process_pre_checkout(pre_checkout_query: PreCheckoutQuery):
@@ -385,7 +372,7 @@ async def process_successful_payment(message: types.Message, state: FSMContext):
     if payload.startswith("stars_rent_"):
         expire_dt = await set_rent(user_id, days=7)
         await message.answer(
-            f"👑 **Оплата прошла успешно! Аренда Бори активирована** до {expire_dt.strftime('%d.%m.%Y %H:%M')}!\n\n"
+            f"👑 **Оплата Stars прошла успешно! Аренда Бори активирована** до {expire_dt.strftime('%d.%m.%Y %H:%M')}!\n\n"
             "Теперь вы можете задавать любые вопросы прямо в чате бесплатно."
         )
     elif payload.startswith("stars_q_"):
