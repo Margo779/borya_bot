@@ -16,6 +16,7 @@ def run_server():
 
 server_thread = threading.Thread(target=run_server, daemon=True)
 server_thread.start()
+
 import asyncio
 import random
 import uuid
@@ -45,17 +46,17 @@ VIDEO_PLAY_TIME = 9.5
 CACHED_VIDEO_ID = None
 DB_NAME = "borya_bot.db"
 
-# Цены (в рублях / USDT / Stars)
-PRICE_QUESTION_STARS = 50   # ~100 руб в Stars
-PRICE_RENT_STARS = 250      # ~500 руб в Stars
-PRICE_QUESTION_USDT = 1.1   # $1.1 (~100 руб)
-PRICE_RENT_USDT = 5.5       # $5.5 (~500 руб)
+# Цены
+PRICE_QUESTION_STARS = 50   
+PRICE_RENT_STARS = 250      
+PRICE_QUESTION_USDT = 1.1   
+PRICE_RENT_USDT = 5.5       
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
 class FortuneForm(StatesGroup):
-    waiting_for_question = State()
+    waiting_for_single_question = State() # Ожидание текста после разовой оплаты
 
 FREE_PREDICTIONS = [
     "Сегодня отличный день для новых начинаний! Доверьтесь интуиции и делайте первый шаг.",
@@ -105,6 +106,8 @@ async def set_rent(user_id: int, days: int = 7):
 async def get_unique_prediction(user_id: int) -> str:
     _, _, last_text = await get_user_data(user_id)
     available = [p for p in PAID_PREDICTIONS if p != last_text]
+    if not available:
+        available = PAID_PREDICTIONS
     chosen = random.choice(available)
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("UPDATE users SET last_prediction = ? WHERE user_id = ?", (chosen, user_id))
@@ -158,7 +161,7 @@ async def play_borya_and_reveal(chat_id: int, final_text: str):
         parse_mode="Markdown"
     )
 
-# === ХЕНДЛЕРЫ ===
+# === СТАРТОВОЕ МЕНЮ ===
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
@@ -172,8 +175,8 @@ async def cmd_start(message: types.Message, state: FSMContext):
         rent_status = f"\n\n👑 *У вас активна аренда Бори до {expire_dt.strftime('%d.%m.%Y %H:%M')}!* Все вопросы бесплатны."
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔮 Задать вопрос", callback_data="pay_question")],
-        [InlineKeyboardButton(text="👑 Аренда на неделю", callback_data="pay_rent")],
+        [InlineKeyboardButton(text="🔮 Задать вопрос", callback_data="pay_question_menu")],
+        [InlineKeyboardButton(text="👑 Аренда на неделю", callback_data="pay_rent_menu")],
         [InlineKeyboardButton(text="🎁 Бесплатный свиток дня", callback_data="free_scroll")]
     ])
     
@@ -196,7 +199,7 @@ async def send_free_fortune(callback: types.CallbackQuery, state: FSMContext):
     if last_free_date == today_str:
         await callback.message.answer(
             "Чик-чирик! 🦜 На сегодня ваш бесплатный свиток уже получен.\n\n"
-            "Приходите завтра за новым предсказанием или выберите персональный вопрос."
+            "Приходите завтра за новым предсказанием или выберите платный сеанс."
         )
         return
 
@@ -208,65 +211,23 @@ async def send_free_fortune(callback: types.CallbackQuery, state: FSMContext):
     caption = f"📜 **Ваше предсказание дня:**\n\n{random_text}"
     await play_borya_and_reveal(callback.message.chat.id, caption)
 
-# --- ВЫБОР ОПЛАТЫ ---
-@dp.callback_query(F.data == "pay_question")
-async def ask_user_question(callback: types.CallbackQuery, state: FSMContext):
-    await callback.answer()
-    user_id = callback.from_user.id
-    
-    # Если у пользователя активна аренда, сразу даем возможность написать вопрос без всяких оплат!
-    if await is_rent_active(user_id):
-        await state.set_state(FortuneForm.waiting_for_question)
-        await callback.message.answer(
-            "👑 **У вас активна аренда!**\n\n🔮 Задайте ваш вопрос Боре (это бесплатно):",
-            parse_mode="Markdown"
-        )
-    else:
-        await state.set_state(FortuneForm.waiting_for_question)
-        await callback.message.answer(
-            "🔮 **Задайте ваш вопрос Боре:**\n\nНапишите сообщение с вашим вопросом в чат:",
-            parse_mode="Markdown"
-        )
 
-@dp.message(FortuneForm.waiting_for_question, F.text)
-async def receive_question(message: types.Message, state: FSMContext):
-    question_text = message.text
-    user_id = message.from_user.id
-    
-    if await is_rent_active(user_id):
-        await state.clear()
-        paid_text = await get_unique_prediction(user_id)
-        caption = f"❓ **Ваш вопрос:** *{question_text}*\n\n📜 **Расклад Бори:**\n{paid_text}"
-        
-        try:
-            await message.reply("🔮 Боря изучает ваш вопрос по аренде...")
-        except Exception:
-            pass
-            
-        await play_borya_and_reveal(message.chat.id, caption)
-        return
+# ==========================================
+# СЦЕНАРИЙ 1: АКТИВНАЯ АРЕНДА ИЛИ ЕЁ ПОКУПКА
+# ==========================================
 
-    await state.update_data(user_question=question_text)
-    await state.set_state(None)
-    
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"⭐️ Оплатить Stars ({PRICE_QUESTION_STARS} ⭐️)", callback_data="pay_stars_q")],
-        [InlineKeyboardButton(text=f"💎 Оплатить Криптой (${PRICE_QUESTION_USDT})", callback_data="pay_crypto_q")]
-    ])
-    
-    await message.answer(
-        f"✍️ Ваш вопрос принят: *«{question_text}»*\n\nВыберите удобный способ оплаты:",
-        reply_markup=kb,
-        parse_mode="Markdown"
-    )
-# --- АРЕНДА БОРИ ---
-@dp.callback_query(F.data == "pay_rent")
+@dp.callback_query(F.data == "pay_rent_menu")
 async def pay_rent_menu(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
     await callback.answer()
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"⭐️ Оплатить аренда Stars ({PRICE_RENT_STARS} ⭐️)", callback_data="pay_stars_rent")],
+        [InlineKeyboardButton(text=f"⭐️ Оплатить аренду Stars ({PRICE_RENT_STARS} ⭐️)", callback_data="pay_stars_rent")],
         [InlineKeyboardButton(text=f"💎 Оплатить аренду Криптой (${PRICE_RENT_USDT})", callback_data="pay_crypto_rent")]
     ])
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
     await callback.message.answer(
         "👑 **Аренда Бори на 7 дней:**\n\nВсе вопросы и расклады в течение недели станут абсолютно бесплатными!\nВыберите способ оплаты:",
         reply_markup=kb,
@@ -276,6 +237,10 @@ async def pay_rent_menu(callback: types.CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "pay_stars_rent")
 async def pay_stars_rent(callback: types.CallbackQuery):
     user_id = callback.from_user.id
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
     await bot.send_invoice(
         chat_id=user_id,
         title="👑 Аренда Бори на 7 дней",
@@ -296,6 +261,10 @@ async def pay_crypto_rent(callback: types.CallbackQuery):
             [InlineKeyboardButton(text="💳 Оплатить через @CryptoBot", url=pay_url)],
             [InlineKeyboardButton(text="✅ Я оплатил аренду", callback_data="check_crypto_rent")]
         ])
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
         await callback.message.answer("Нажмите кнопку ниже для оплаты аренды. После перевода нажмите «Я оплатил аренду»:", reply_markup=kb)
     else:
         await callback.message.answer("Ошибка создания счета. Попробуйте оплату через Telegram Stars.")
@@ -305,9 +274,7 @@ async def check_crypto_rent(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     expire_dt = await set_rent(user_id, days=7)
     await callback.answer("Аренда успешно активирована! 👑")
-    
-    await state.set_state(FortuneForm.waiting_for_question)
-    
+    await state.clear()
     try:
         await callback.message.delete()
     except Exception:
@@ -315,25 +282,98 @@ async def check_crypto_rent(callback: types.CallbackQuery, state: FSMContext):
         
     await callback.message.answer(
         f"👑 **Поздравляем! Аренда Бори активирована** до {expire_dt.strftime('%d.%m.%Y %H:%M')}!\n\n"
-        "🔮 *Аренда активна.* Напишите ваш вопрос Боре прямо в этот чат:",
+        "🔮 Теперь любые ваши сообщения в чат будут автоматически обрабатываться Борей бесплатно!",
+        parse_Mode="Markdown"
+    )
+
+
+# ==========================================
+# СЦЕНАРИЙ 2: РАЗОВЫЙ ПЛАТНЫЙ СЕАНС
+# ==========================================
+
+@dp.callback_query(F.data == "pay_question_menu")
+async def pay_question_menu(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.answer()
+    
+    # Если у пользователя активна аренда — оплата НЕ нужна вообще!
+    if await is_rent_active(callback.from_user.id):
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        await callback.message.answer(
+            "👑 **У вас активна аренда!**\n\n🔮 Напишите ваш вопрос Боре прямо в чат:",
+            parse_mode="Markdown"
+        )
+        return
+
+    # Если аренды нет — показываем кнопки выбора оплаты разового вопроса
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"⭐️ Оплатить Stars ({PRICE_QUESTION_STARS} ⭐️)", callback_data="pay_stars_q")],
+        [InlineKeyboardButton(text=f"💎 Оплатить Криптой (${PRICE_QUESTION_USDT})", callback_data="pay_crypto_q")]
+    ])
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+    await callback.message.answer(
+        "🔮 **Разовый платный сеанс:**\n\nВыберите удобный способ оплаты:",
+        reply_markup=kb,
         parse_mode="Markdown"
     )
-# --- ОПЛАТА СТАРСАМИ (STARS) ---
+
 @dp.callback_query(F.data == "pay_stars_q")
-async def pay_stars_q(callback: types.CallbackQuery, state: FSMContext):
+async def pay_stars_q(callback: types.CallbackQuery):
     user_id = callback.from_user.id
-    data = await state.get_data()
-    q_text = data.get("user_question", "Ваш вопрос")
-    
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+
     await bot.send_invoice(
         chat_id=user_id,
         title="🔮 Расклад Бори",
-        description=f"Ответ на вопрос: {q_text[:30]}...",
-        provider_token="",  # Пусто для Telegram Stars
-        currency="XTR",    # Валюта Telegram Stars
+        description="Оплата разового вопроса попугаю Боре",
+        provider_token="",
+        currency="XTR",
         prices=[LabeledPrice(label="Расклад", amount=PRICE_QUESTION_STARS)],
         start_parameter="borya-q",
         payload=f"stars_q_{user_id}"
+    )
+
+@dp.callback_query(F.data == "pay_crypto_q")
+async def pay_crypto_q(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    pay_url = await create_crypto_invoice(PRICE_QUESTION_USDT, "Расклад Бори", f"crypto_q_{user_id}")
+    
+    if pay_url:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💳 Оплатить через @CryptoBot", url=pay_url)],
+            [InlineKeyboardButton(text="✅ Я оплатил", callback_data="check_crypto_pay")]
+        ])
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        await callback.message.answer("Нажмите кнопку ниже для перевода средств. После оплаты нажмите «Я оплатил»:", reply_markup=kb)
+    else:
+        await callback.message.answer("Ошибка создания счета. Попробуйте оплату через Telegram Stars.")
+
+@dp.callback_query(F.data == "check_crypto_pay")
+async def check_crypto_pay(callback: types.CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
+    await callback.answer("Оплата подтверждена! 💎")
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+    
+    # Переводим в состояние ожидания вопроса ПОСЛЕ успешной оплаты криптой
+    await state.set_state(FortuneForm.waiting_for_single_question)
+    await callback.message.answer(
+        "✅ **Оплата прошла успешно!**\n\n✍️ Теперь напишите ваш вопрос Боре в чат:",
+        parse_mode="Markdown"
     )
 
 @dp.pre_checkout_query()
@@ -349,46 +389,63 @@ async def process_successful_payment(message: types.Message, state: FSMContext):
         expire_dt = await set_rent(user_id, days=7)
         await message.answer(
             f"👑 **Оплата прошла успешно! Аренда Бори активирована** до {expire_dt.strftime('%d.%m.%Y %H:%M')}!\n\n"
-            "Теперь вы можете задавать вопросы бесплатно."
+            "Теперь вы можете задавать любые вопросы прямо в чате бесплатно."
         )
-    else:
-        data = await state.get_data()
-        saved_question = data.get("user_question", "Ваш вопрос")
+    elif payload.startswith("stars_q_"):
+        # Переводим в состояние ожидания вопроса ПОСЛЕ успешной оплаты Stars
+        await state.set_state(FortuneForm.waiting_for_single_question)
+        await message.answer(
+            "✅ **Оплата Stars прошла успешно!**\n\n✍️ Теперь напишите ваш вопрос Боре в чат:",
+            parse_mode="Markdown"
+        )
+
+
+# ==========================================
+# ОБРАБОТКА ТЕКСТОВЫХ СООБЩЕНИЙ ПОЛЬЗОВАТЕЛЯ
+# ==========================================
+
+@dp.message(F.text)
+async def handle_user_text(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    question_text = message.text
+    current_state = await state.get_state()
+
+    # СЛУЧАЙ А: У пользователя активна аренда — отвечаем на любые сообщения сразу!
+    if await is_rent_active(user_id):
         await state.clear()
-
         paid_text = await get_unique_prediction(user_id)
-        caption = f"❓ **Ваш вопрос:** *{saved_question}*\n\n📜 **Расклад Бори:**\n{paid_text}"
+        caption = f"❓ **Ваш вопрос:** *{question_text}*\n\n📜 **Расклад Бори (по аренде):**\n{paid_text}"
+        
+        try:
+            await message.reply("🔮 Боря изучает ваш вопрос...")
+        except Exception:
+            pass
+            
         await play_borya_and_reveal(message.chat.id, caption)
+        return
 
-# --- ОПЛАТА КРИПТОЙ (CRYPTOBOT) ---
-@dp.callback_query(F.data == "pay_crypto_q")
-async def pay_crypto_q(callback: types.CallbackQuery, state: FSMContext):
-    user_id = callback.from_user.id
-    pay_url = await create_crypto_invoice(PRICE_QUESTION_USDT, "Расклад Бори", f"crypto_q_{user_id}")
-    
-    if pay_url:
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💳 Оплатить через @CryptoBot", url=pay_url)],
-            [InlineKeyboardButton(text="✅ Я оплатил", callback_data="check_crypto_pay")]
-        ])
-        await callback.message.answer("Нажмите кнопку ниже для перевода средств. После оплаты нажмите «Я оплатил»:", reply_markup=kb)
-    else:
-        await callback.message.answer("Ошибка создания счета. Попробуйте оплату через Telegram Stars.")
+    # СЛУЧАЙ Б: Пользователь оплатил разовый сеанс и прислал сам вопрос
+    if current_state == FortuneForm.waiting_for_single_question.state:
+        await state.clear()
+        paid_text = await get_unique_prediction(user_id)
+        caption = f"❓ **Ваш вопрос:** *{question_text}*\n\n📜 **Расклад Бори:**\n{paid_text}"
+        
+        await play_borya_and_reveal(message.chat.id, caption)
+        return
 
-@dp.callback_query(F.data == "check_crypto_pay")
-async def check_crypto_pay(callback: types.CallbackQuery, state: FSMContext):
-    user_id = callback.from_user.id
-    # В рамках простой версии проверяем и выдаем расклад:
-    await callback.answer("Успешно! Боря уже достает свиток...")
-    data = await state.get_data()
-    saved_question = data.get("user_question", "Ваш вопрос")
-    await state.clear()
-    
-    paid_text = await get_unique_prediction(user_id)
-    caption = f"❓ **Ваш вопрос:** *{saved_question}*\n\n📜 **Расклад Бори:**\n{paid_text}"
-    await play_borya_and_reveal(callback.message.chat.id, caption)
+    # СЛУЧАЙ В: Пользователь просто написал текст без аренды и без оплаты
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔮 Задать платный вопрос", callback_data="pay_question_menu")],
+        [InlineKeyboardButton(text="👑 Аренда на неделю", callback_data="pay_rent_menu")],
+        [InlineKeyboardButton(text="🎁 Бесплатный свиток дня", callback_data="free_scroll")]
+    ])
+    await message.answer(
+        "Чик-чирик! 🦜 Чтобы Боря сделал для вас расклад, выберите вариант взаимодействия в меню ниже:",
+        reply_markup=kb
+    )
 
-# === ФИКТИВНЫЙ ВЕБ-СЕРВЕР ДЛЯ RENDER ===
+
+# --- ФИКТИВНЫЙ ВЕБ-СЕРВЕР ДЛЯ RENDER ---
 async def handle(request):
     return aiohttp.web.Response(text="Borya Bot is running!")
 
@@ -402,9 +459,7 @@ async def web_server():
 
 async def main():
     await init_db()
-    # Запускаем веб-сервер для Render в фоне:
     asyncio.create_task(web_server())
-    # Запускаем бота:
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
