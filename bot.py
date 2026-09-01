@@ -142,9 +142,8 @@ async def check_crypto_invoice_status(invoice_id: int) -> bool:
                 return status == "paid"
     return False
 
-# === ФОНОВЫЙ АВТОПЕРЕОДЧИК ОПЛАТЫ (Без кнопки проверки) ===
+# === ФОНОВЫЙ АВТОПЕРЕОДЧИК ОПЛАТЫ ===
 async def background_crypto_checker(chat_id: int, user_id: int, invoice_id: int, payment_type: str, state: FSMContext):
-    # Проверяем в течение 15 минут (90 раз по 10 секунд)
     for _ in range(90):
         await asyncio.sleep(10)
         if await check_crypto_invoice_status(invoice_id):
@@ -195,11 +194,9 @@ async def play_borya_and_reveal(chat_id: int, final_text: str):
         parse_mode="Markdown"
     )
 
-# === СТАРТОВОЕ МЕНЮ ===
-@dp.message(CommandStart())
-async def cmd_start(message: types.Message, state: FSMContext):
-    await state.clear()
-    user_id = message.from_user.id
+# === ГЛАВНОЕ МЕНЮ (Универсальная функция) ===
+async def send_main_menu(message_or_callback, text_prefix=""):
+    user_id = message_or_callback.from_user.id
     await get_user_data(user_id)
     
     rent_status = ""
@@ -214,12 +211,27 @@ async def cmd_start(message: types.Message, state: FSMContext):
         [InlineKeyboardButton(text="🎁 Бесплатный свиток дня", callback_data="free_scroll")]
     ])
     
-    await message.answer(
-        f"Привет, {message.from_user.first_name}! 🦜 Я попугай Боря.\n"
-        f"Задай мне вопрос, и я вытащу для тебя предсказание!{rent_status}",
-        reply_markup=kb,
-        parse_mode="Markdown"
-    )
+    text = f"{text_prefix}Чик-чирик! 🦜 Я попугай Боря.\nВыберите вариант взаимодействия:{rent_status}"
+    
+    # Если это callback (нажатие на кнопку), редактируем текущее сообщение, чтобы оно не дублировалось бесконечно
+    if isinstance(message_or_callback, types.CallbackQuery):
+        try:
+            await message_or_callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+        except Exception:
+            await message_or_callback.message.answer(text, reply_markup=kb, parse_mode="Markdown")
+    else:
+        await message_or_callback.answer(text, reply_markup=kb, parse_mode="Markdown")
+
+@dp.message(CommandStart())
+async def cmd_start(message: types.Message, state: FSMContext):
+    await state.clear()
+    await send_main_menu(message)
+
+@dp.callback_query(F.data == "main_menu")
+async def back_to_main_menu(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.answer()
+    await send_main_menu(callback)
 
 @dp.callback_query(F.data == "free_scroll")
 async def send_free_fortune(callback: types.CallbackQuery, state: FSMContext):
@@ -256,7 +268,8 @@ async def pay_rent_menu(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"⭐️ Оплатить аренду Stars ({PRICE_RENT_STARS} ⭐️)", callback_data="pay_stars_rent")],
-        [InlineKeyboardButton(text=f"💎 Оплатить аренду Криптой (${PRICE_RENT_USDT})", callback_data="pay_crypto_rent")]
+        [InlineKeyboardButton(text=f"💎 Оплатить аренду Криптой (${PRICE_RENT_USDT})", callback_data="pay_crypto_rent")],
+        [InlineKeyboardButton(text="🔙 Назад в меню", callback_data="main_menu")]
     ])
     await callback.message.edit_text(
         "👑 **Аренда Бори на 7 дней:**\n\nВсе вопросы и расклады в течение недели станут абсолютно бесплатными!\nВыберите способ оплаты:",
@@ -285,15 +298,16 @@ async def pay_crypto_rent(callback: types.CallbackQuery, state: FSMContext):
     pay_url, invoice_id = await create_crypto_invoice(PRICE_RENT_USDT, "Аренда Бори на 7 дней", f"crypto_rent_{user_id}")
     if pay_url:
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💳 Оплатить в CryptoBot", url=pay_url)]
+            [InlineKeyboardButton(text="💳 Оплатить в CryptoBot", url=pay_url)],
+            [InlineKeyboardButton(text="🔙 Назад в меню", callback_data="main_menu")]
         ])
-        await callback.message.edit_text(
+        # Отправляем новым сообщением, чтобы старое меню выбора никуда не исчезало
+        await callback.message.answer(
             "💎 **Счет на оплату аренды создан!**\n\n"
             "Нажмите кнопку ниже для перевода. Как только оплата пройдет, Боря **автоматически** активирует аренду прямо здесь!",
             reply_markup=kb,
             parse_mode="Markdown"
         )
-        # Запускаем фоновую проверку
         asyncio.create_task(background_crypto_checker(chat_id, user_id, invoice_id, "rent", state))
     else:
         await callback.message.answer("Ошибка создания счета. Попробуйте оплату через Telegram Stars.")
@@ -317,7 +331,8 @@ async def pay_question_menu(callback: types.CallbackQuery, state: FSMContext):
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"⭐️ Оплатить Stars ({PRICE_QUESTION_STARS} ⭐️)", callback_data="pay_stars_q")],
-        [InlineKeyboardButton(text=f"💎 Оплатить Криптой (${PRICE_QUESTION_USDT})", callback_data="pay_crypto_q")]
+        [InlineKeyboardButton(text=f"💎 Оплатить Криптой (${PRICE_QUESTION_USDT})", callback_data="pay_crypto_q")],
+        [InlineKeyboardButton(text="🔙 Назад в меню", callback_data="main_menu")]
     ])
     await callback.message.edit_text(
         "🔮 **Разовый платный сеанс:**\n\nВыберите удобный способ оплаты:",
@@ -347,15 +362,16 @@ async def pay_crypto_q(callback: types.CallbackQuery, state: FSMContext):
     
     if pay_url:
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💳 Оплатить в CryptoBot", url=pay_url)]
+            [InlineKeyboardButton(text="💳 Оплатить в CryptoBot", url=pay_url)],
+            [InlineKeyboardButton(text="🔙 Назад в меню", callback_data="main_menu")]
         ])
-        await callback.message.edit_text(
+        # Отправляем новым сообщением, сохраняя главное меню выше
+        await callback.message.answer(
             "💎 **Счет на оплату расклада создан!**\n\n"
             "Нажмите кнопку ниже для перевода. Как только оплата пройдет, Боря **автоматически** попросит вас написать вопрос!",
             reply_markup=kb,
             parse_mode="Markdown"
         )
-        # Запускаем фоновую проверку
         asyncio.create_task(background_crypto_checker(chat_id, user_id, invoice_id, "question", state))
     else:
         await callback.message.answer("Ошибка создания счета. Попробуйте оплату через Telegram Stars.")
@@ -416,16 +432,8 @@ async def handle_user_text(message: types.Message, state: FSMContext):
         await play_borya_and_reveal(message.chat.id, caption)
         return
 
-    # СЛУЧАЙ В: Пользователь просто пишет текст без оплаты и без аренды
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔮 Задать платный вопрос", callback_data="pay_question_menu")],
-        [InlineKeyboardButton(text="👑 Аренда на неделю", callback_data="pay_rent_menu")],
-        [InlineKeyboardButton(text="🎁 Бесплатный свиток дня", callback_data="free_scroll")]
-    ])
-    await message.answer(
-        "Чик-чирик! 🦜 Чтобы Боря сделал для вас расклад, выберите вариант взаимодействия в меню ниже:",
-        reply_markup=kb
-    )
+    # СЛУЧАЙ В: Пользователь просто пишет текст без оплаты и без аренды — показываем меню
+    await send_main_menu(message, text_prefix="Чик-чирик! 🦜 Чтобы Боря сделал для вас расклад, ")
 
 
 # --- ВЕБ-СЕРВЕР ДЛЯ RENDER ---
