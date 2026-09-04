@@ -41,6 +41,9 @@ from predictions import PAID_PREDICTIONS
 BOT_TOKEN = "8820100460:AAGS4-haGYH-W-vg7xHkdrJI3HWcKMPFPqg"
 CRYPTO_BOT_TOKEN = "628976:AA2wMF2x654qMgbneE74cbBS1RAVyuCJyY9"
 
+# 
+ADMIN_ID = 5562544524  
+
 VIDEO_PLAY_TIME = 9.5
 CACHED_VIDEO_ID = None
 DB_NAME = "borya_bot.db"
@@ -147,6 +150,14 @@ async def background_crypto_checker(chat_id: int, user_id: int, invoice_id: int,
     for _ in range(90):
         await asyncio.sleep(10)
         if await check_crypto_invoice_status(invoice_id):
+            try:
+                chat_member = await bot.get_chat(user_id)
+                user_name = chat_member.full_name
+                user_username = f"@{chat_member.username}" if chat_member.username else "без username"
+            except Exception:
+                user_name = "Пользователь"
+                user_username = ""
+
             if payment_type == "rent":
                 expire_dt = await set_rent(user_id, days=7)
                 await bot.send_message(
@@ -155,6 +166,17 @@ async def background_crypto_checker(chat_id: int, user_id: int, invoice_id: int,
                          "🔮 Теперь любые ваши сообщения в чат будут автоматически обрабатываться Борей бесплатно!",
                     parse_mode="Markdown"
                 )
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"💎 **Новая оплата (Аренда 💎 CryptoBot)!**\n"
+                        f"👤 Пользователь: {user_name} ({user_username})\n"
+                        f"🆔 ID: {user_id}",
+                        parse_mode="Markdown"
+                    )
+                except Exception:
+                    pass
+
             elif payment_type == "question":
                 await state.set_state(FortuneForm.waiting_for_single_question)
                 await bot.send_message(
@@ -162,6 +184,16 @@ async def background_crypto_checker(chat_id: int, user_id: int, invoice_id: int,
                     text="✅ **Оплата через CryptoBot получена!**\n\n✍️ Теперь напишите ваш вопрос Боре в чат:",
                     parse_mode="Markdown"
                 )
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"💎 **Новая оплата (Разовый вопрос 💎 CryptoBot)!**\n"
+                        f"👤 Пользователь: {user_name} ({user_username})\n"
+                        f"🆔 ID: {user_id}",
+                        parse_mode="Markdown"
+                    )
+                except Exception:
+                    pass
             return
 
 # === АНИМАЦИЯ БОРЯ ===
@@ -213,7 +245,6 @@ async def send_main_menu(message_or_callback, text_prefix=""):
     
     text = f"{text_prefix}Чик-чирик! 🦜 Я попугай Боря.\nВыберите вариант взаимодействия:{rent_status}"
     
-    # Если это callback (нажатие на кнопку), редактируем текущее сообщение, чтобы оно не дублировалось бесконечно
     if isinstance(message_or_callback, types.CallbackQuery):
         try:
             await message_or_callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
@@ -301,7 +332,6 @@ async def pay_crypto_rent(callback: types.CallbackQuery, state: FSMContext):
             [InlineKeyboardButton(text="💳 Оплатить в CryptoBot", url=pay_url)],
             [InlineKeyboardButton(text="🔙 Назад в меню", callback_data="main_menu")]
         ])
-        # Отправляем новым сообщением, чтобы старое меню выбора никуда не исчезало
         await callback.message.answer(
             "💎 **Счет на оплату аренды создан!**\n\n"
             "Нажмите кнопку ниже для перевода. Как только оплата пройдет, Боря **автоматически** активирует аренду прямо здесь!",
@@ -365,7 +395,6 @@ async def pay_crypto_q(callback: types.CallbackQuery, state: FSMContext):
             [InlineKeyboardButton(text="💳 Оплатить в CryptoBot", url=pay_url)],
             [InlineKeyboardButton(text="🔙 Назад в меню", callback_data="main_menu")]
         ])
-        # Отправляем новым сообщением, сохраняя главное меню выше
         await callback.message.answer(
             "💎 **Счет на оплату расклада создан!**\n\n"
             "Нажмите кнопку ниже для перевода. Как только оплата пройдет, Боря **автоматически** попросит вас написать вопрос!",
@@ -384,6 +413,8 @@ async def process_pre_checkout(pre_checkout_query: PreCheckoutQuery):
 async def process_successful_payment(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     payload = message.successful_payment.invoice_payload
+    user_name = message.from_user.full_name
+    user_username = f"@{message.from_user.username}" if message.from_user.username else "без username"
     
     if payload.startswith("stars_rent_"):
         expire_dt = await set_rent(user_id, days=7)
@@ -391,12 +422,33 @@ async def process_successful_payment(message: types.Message, state: FSMContext):
             f"👑 **Оплата Stars прошла успешно! Аренда Бори активирована** до {expire_dt.strftime('%d.%m.%Y %H:%M')}!\n\n"
             "Теперь вы можете задавать любые вопросы прямо в чате бесплатно."
         )
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"💰 **Новая оплата (Аренда ⭐️ Stars)!**\n"
+                f"👤 Пользователь: {user_name} ({user_username})\n"
+                f"🆔 ID: {user_id}",
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+
     elif payload.startswith("stars_q_"):
         await state.set_state(FortuneForm.waiting_for_single_question)
         await message.answer(
             "✅ **Оплата Stars прошла успешно!**\n\n✍️ Теперь напишите ваш вопрос Боре в чат:",
             parse_mode="Markdown"
         )
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"💰 **Новая оплата (Разовый вопрос ⭐️ Stars)!**\n"
+                f"👤 Пользователь: {user_name} ({user_username})\n"
+                f"🆔 ID: {user_id}",
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
 
 
 # ==========================================
@@ -409,7 +461,6 @@ async def handle_user_text(message: types.Message, state: FSMContext):
     question_text = message.text
     current_state = await state.get_state()
 
-    # СЛУЧАЙ А: У пользователя активна аренда
     if await is_rent_active(user_id):
         await state.clear()
         paid_text = await get_unique_prediction(user_id)
@@ -423,7 +474,6 @@ async def handle_user_text(message: types.Message, state: FSMContext):
         await play_borya_and_reveal(message.chat.id, caption)
         return
 
-    # СЛУЧАЙ Б: Пользователь оплатил разовый сеанс и прислал сам вопрос
     if current_state == FortuneForm.waiting_for_single_question.state:
         await state.clear()
         paid_text = await get_unique_prediction(user_id)
@@ -432,7 +482,6 @@ async def handle_user_text(message: types.Message, state: FSMContext):
         await play_borya_and_reveal(message.chat.id, caption)
         return
 
-    # СЛУЧАЙ В: Пользователь просто пишет текст без оплаты и без аренды — показываем меню
     await send_main_menu(message, text_prefix="Чик-чирик! 🦜 Чтобы Боря сделал для вас расклад, ")
 
 
