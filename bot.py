@@ -21,6 +21,7 @@ import asyncio
 import random
 from datetime import date, datetime, timedelta
 import aiohttp
+from aiohttp import web
 import aiosqlite
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import CommandStart
@@ -532,14 +533,14 @@ async def handle_user_text(message: types.Message, state: FSMContext):
 
 # --- ВЕБ-СЕРВЕР ДЛЯ RENDER ---
 async def handle(request):
-    return aiohttp.web.Response(text="Borya Bot is running!")
+    return web.Response(text="Borya Bot is running!")
 
 async def web_server():
-    app = aiohttp.web.Application()
+    app = web.Application()
     app.router.add_get("/", handle)
-    runner = aiohttp.web.AppRunner(app)
+    runner = web.AppRunner(app)
     await runner.setup()
-    site = aiohttp.web.TCPSite(runner, "0.0.0.0", 10000)
+    site = web.TCPSite(runner, "0.0.0.0", 10000)
     await site.start()
 
 async def main():
